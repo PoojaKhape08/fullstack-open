@@ -1,7 +1,7 @@
 const express = require('express')
 const morgan = require('morgan')
-const mongoose = require('mongoose')
 require('dotenv').config()
+const Person = require('./models/person')
 
 const app = express()
 
@@ -17,41 +17,12 @@ app.use(
   morgan(':method :url :status :res[content-length] - :response-time ms :body')
 )
 
-// MongoDB connection
-mongoose.set('strictQuery', false)
-
-mongoose
-  .connect(process.env.MONGODB_URI)
-  .then(() => {
-    console.log('Connected to MongoDB')
-  })
-  .catch((error) => {
-    console.log('Error connecting to MongoDB:', error.message)
-  })
-
-// Person Schema
-const personSchema = new mongoose.Schema({
-  name: {
-    type: String,
-    required: true
-  },
-  number: {
-    type: String,
-    required: true
-  }
-})
-
-// Person Model
-const Person = mongoose.model('Person', personSchema)
-
-
 // GET all persons
 app.get('/api/persons', (request, response) => {
   Person.find({}).then(persons => {
     response.json(persons)
   })
 })
-
 
 // GET info
 app.get('/info', (request, response) => {
@@ -65,9 +36,8 @@ app.get('/info', (request, response) => {
   })
 })
 
-
 // GET one person
-app.get('/api/persons/:id', (request, response) => {
+app.get('/api/persons/:id', (request, response, next) => {
   Person.findById(request.params.id)
     .then(person => {
       if (person) {
@@ -77,27 +47,45 @@ app.get('/api/persons/:id', (request, response) => {
       }
     })
     .catch(error => {
-      console.log(error)
-      response.status(400).send({ error: 'malformatted id' })
+      next(error)
     })
 })
 
-
 // DELETE person
-app.delete('/api/persons/:id', (request, response) => {
+app.delete('/api/persons/:id', (request, response, next) => {
   Person.findByIdAndDelete(request.params.id)
     .then(() => {
       response.status(204).end()
     })
     .catch(error => {
-      console.log(error)
-      response.status(400).send({ error: 'malformatted id' })
+      next(error)
     })
 })
 
+// PUT update person
+app.put('/api/persons/:id', (request, response, next) => {
+  const body = request.body
+
+  Person.findById(request.params.id)
+    .then(person => {
+      if (!person) {
+        return response.status(404).end()
+      }
+
+      person.name = body.name
+      person.number = body.number
+
+      return person.save().then(updatedPerson => {
+        response.json(updatedPerson)
+      })
+    })
+    .catch(error => {
+      next(error)
+    })
+})
 
 // POST new person
-app.post('/api/persons', (request, response) => {
+app.post('/api/persons', (request, response, next) => {
   const body = request.body
 
   if (!body.name) {
@@ -112,16 +100,27 @@ app.post('/api/persons', (request, response) => {
     })
   }
 
-  const person = new Person({
-    name: body.name,
-    number: body.number
-  })
+  Person.findOne({ name: body.name })
+    .then(existingPerson => {
+      if (existingPerson) {
+        existingPerson.number = body.number
 
-  person.save().then(savedPerson => {
-    response.json(savedPerson)
-  })
+        return existingPerson.save().then(updatedPerson => {
+          response.json(updatedPerson)
+        })
+      }
+
+      const person = new Person({
+        name: body.name,
+        number: body.number
+      })
+
+      return person.save().then(savedPerson => {
+        response.json(savedPerson)
+      })
+    })
+    .catch(error => next(error))
 })
-
 
 // Unknown endpoint middleware
 const unknownEndpoint = (request, response) => {
@@ -132,6 +131,24 @@ const unknownEndpoint = (request, response) => {
 
 app.use(unknownEndpoint)
 
+// Error handler middleware
+const errorHandler = (error, request, response, next) => {
+  console.error(error.message)
+
+  if (error.name === 'CastError') {
+    return response.status(400).send({
+      error: 'malformatted id'
+    })
+  } else if (error.name === 'ValidationError') {
+    return response.status(400).json({
+      error: error.message
+    })
+  }
+
+  next(error)
+}
+
+app.use(errorHandler)
 
 // Port
 const PORT = process.env.PORT || 3001
